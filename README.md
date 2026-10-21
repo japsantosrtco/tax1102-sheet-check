@@ -1,5 +1,7 @@
 # TAX1102 Sheet Check
 
+Open the app: https://japsantosrtco.github.io/tax1102-sheet-check/
+
 A single-file phone web app for the supplied A4 bubble sheet. All image reading and
 scoring happen in a browser worker. No real or demo answer key is embedded or fetched.
 The code uses the supplied G1 geometry and item-type mapping verbatim.

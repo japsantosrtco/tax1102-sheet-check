@@ -148,7 +148,7 @@ function readSheet(image){
       if(p.length!==3||p[0]!==C.exam||p[2]!==C.geometry_version||!C.set_codes[p[1]])throw Error('This sheet QR belongs to a different exam or version.');
       code=p[1];versionSource='QR';
       if(marks[set]>=.55&&C.set_codes[code]!==set)throw Error('Sheet QR and bottom version mark disagree. Check this paper by hand.');
-    }else if(marks[set]<.55||Math.abs(marks.A-marks.B)<.3)throw Error('Version unreadable. Keep the sheet QR and bottom mark in view.');
+    }else if(marks[set]<.55||Math.abs(marks.A-marks.B)<.3)throw Error(hold+' Keep the sheet QR and bottom version mark visible too.');
     const flags=[],raw=[];let answers='';
     for(let n=1;n<=C.items;n++){
       const scores=G.answers[n].map(([x,y])=>diskDark(g,x,y,G.bubble_r));raw.push(scores);
@@ -277,11 +277,15 @@ async function openFile(file){
   const url=URL.createObjectURL(file),img=new Image();
   try{img.src=url;await img.decode();return capture(img);}catch{throw Error('This image could not be opened. Try a JPEG or PNG photo.');}finally{URL.revokeObjectURL(url);}
 }
-function stopCamera(){
+function stopCamera(freeze=false){
   cameraGeneration++;clearTimeout(timer);timer=null;
   if(stream)for(const track of stream.getTracks())track.stop();
   stream=null;$('video').srcObject=null;$('video').hidden=true;
-  $('camera-placeholder').hidden=false;$('camera-start').textContent='Start camera';lastSignature='';
+  let frozen=$('camera-frozen');
+  if(!frozen){frozen=document.createElement('img');frozen.id='camera-frozen';frozen.alt='Captured answer sheet';frozen.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:contain';$('video').parentNode.append(frozen);}
+  // Show the exact accepted sheet while releasing the camera hardware.
+  frozen.hidden=!freeze;if(freeze)frozen.src=currentImage;
+  $('camera-placeholder').hidden=freeze;$('camera-start').textContent='Start camera';lastSignature='';
 }
 async function startCamera(mode='sheet'){
   if(busy){status('Finish the current image before starting the camera.');return;}
@@ -309,7 +313,7 @@ async function cameraLoop(generation){
         if(read){loadKey(read);stopCamera();status('Answer key loaded. Ready to scan a sheet.');}
       }else{
         const signature=JSON.stringify([read.version_code,read.student_no,read.section,read.answers,read.flags.map(f=>[f.kind,f.item,f.column,f.bubbles])]);
-        if(signature===lastSignature){await accept(read);stopCamera();navigator.vibrate?.(100);}
+        if(signature===lastSignature){await accept(read);stopCamera(true);navigator.vibrate?.(100);$('result').scrollIntoView({behavior:'smooth',block:'start'});}
         else{lastSignature=signature;status('Sheet found. Hold still for one more matching reading…');}
       }
     }catch(e){lastSignature='';status(e.message);}finally{busy=false;}
@@ -337,7 +341,7 @@ async function accept(read){
   if(mode==='professor'){
     history=stored('history',[]);
     const prior=!read.student_no.includes('?')?history.findLast(r=>r.student_no===read.student_no):null;
-    if(prior)repeat=prior.version_code!==read.version_code?'Repeat student number: version changed.':prior.answers!==read.answers?'Repeat student number: answers changed.':'Repeat student number: answers unchanged.';
+    if(prior)repeat=`Repeat student number: answers ${prior.answers!==read.answers?'changed':'unchanged'}.${prior.version_code!==read.version_code?' Version changed.':''}`;
     history.push({...record,repeat:repeat||''});
     try{persist('history',history);}catch{notice('This scan is queued, but the professor list could not be saved because phone storage is full. Export the list.');}
   }
@@ -392,7 +396,12 @@ async function syncQueue(){
           if(!q.uploaded){
             const blob=await imageStore('get',r.scan_id);if(!blob)throw Error('Queued sheet image missing. Keep the paper and scan it again.');
             const res=await send(`${db.url}/storage/v1/object/sheets/${r.image_path}`,{method:'POST',headers:{...headers('image/jpeg'),'x-upsert':'false'},body:blob});
-            if(!res.ok){const err=await res.json().catch(()=>({}));if(!(res.status===409&&(err.error==='Duplicate'||err.statusCode==='409'||err.message?.includes('already exists'))))throw Error(`Image upload failed (${res.status}). Check the sheets bucket policy.`);}
+            if(!res.ok){
+              const err=await res.json().catch(()=>({}));
+              // Supabase deployments report duplicate objects as either 400 or 409.
+              const duplicate=[400,409].includes(res.status)&&(err.error==='Duplicate'||['ResourceAlreadyExists','KeyAlreadyExists'].includes(err.code)||/asset already exists/i.test(err.message||''));
+              if(!duplicate)throw Error(`Image upload failed (${res.status}). Check the sheets bucket policy.`);
+            }
             // Keep network waits outside the short queue-write lock so scanning
             // another sheet can persist immediately while uploads are in flight.
             await locked(async()=>{queue=stored('queue',[]);const item=queue.find(item=>item.record.scan_id===r.scan_id);if(item)item.uploaded=true;persist('queue',queue);});
